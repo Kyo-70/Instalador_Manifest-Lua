@@ -6,7 +6,6 @@ Script para copiar arquivos .lua e .manifest de uma pasta de origem para destino
 """
 
 import os
-import sys
 import shutil
 import psutil
 from colorama import Fore, Style, init
@@ -140,7 +139,7 @@ def listar_processos_usando_arquivo(caminho_arquivo):
         for proc in psutil.process_iter(['pid', 'name', 'open_files']):
             try:
                 # Verifica se o processo tem arquivos abertos
-                if proc.info['open_files']:
+                if proc.info['open_files'] is not None:
                     for arquivo_aberto in proc.info['open_files']:
                         # Compara caminhos absolutos
                         if os.path.abspath(arquivo_aberto.path) == caminho_absoluto:
