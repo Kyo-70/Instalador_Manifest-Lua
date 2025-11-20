@@ -1,0 +1,1 @@
+# Instalador_Manifest-Lua
