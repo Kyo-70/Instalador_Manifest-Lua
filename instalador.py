@@ -7,6 +7,7 @@ Script para copiar arquivos .lua e .manifest de uma pasta de origem para destino
 
 import os
 import shutil
+import psutil
 from colorama import Fore, Style, init
 
 # Inicializa colorama para funcionar no Windows
@@ -121,6 +122,117 @@ def criar_diretorio_se_necessario(caminho):
         return False
 
 
+def listar_processos_usando_arquivo(caminho_arquivo):
+    """
+    Lista todos os processos que estão usando um arquivo específico.
+    
+    Args:
+        caminho_arquivo (str): Caminho completo do arquivo
+        
+    Returns:
+        list: Lista de tuplas (pid, nome_processo) dos processos usando o arquivo
+    """
+    processos = []
+    caminho_absoluto = os.path.abspath(caminho_arquivo)
+    
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'open_files']):
+            try:
+                # Verifica se o processo tem arquivos abertos
+                if proc.info['open_files'] is not None:
+                    for arquivo_aberto in proc.info['open_files']:
+                        # Compara caminhos absolutos
+                        if os.path.abspath(arquivo_aberto.path) == caminho_absoluto:
+                            processos.append((proc.info['pid'], proc.info['name']))
+                            break
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                # Ignora processos que não podem ser acessados
+                continue
+    except Exception:
+        # Em caso de erro ao listar processos, retorna lista vazia
+        pass
+    
+    return processos
+
+
+def tentar_fechar_processo(pid, nome_processo):
+    """
+    Tenta fechar um processo específico.
+    
+    Args:
+        pid (int): ID do processo
+        nome_processo (str): Nome do processo
+        
+    Returns:
+        bool: True se o processo foi fechado com sucesso, False caso contrário
+    """
+    try:
+        processo = psutil.Process(pid)
+        processo.terminate()  # Tenta terminar gentilmente
+        
+        # Aguarda até 3 segundos para o processo terminar
+        try:
+            processo.wait(timeout=3)
+            print(Fore.GREEN + f"  ✓ Processo '{nome_processo}' (PID: {pid}) foi fechado com sucesso.")
+            return True
+        except psutil.TimeoutExpired:
+            # Se não terminou, tenta forçar
+            processo.kill()
+            print(Fore.GREEN + f"  ✓ Processo '{nome_processo}' (PID: {pid}) foi forçado a fechar.")
+            return True
+            
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        print(Fore.RED + f"  ✗ Não foi possível fechar o processo '{nome_processo}' (PID: {pid}): {e}")
+        return False
+
+
+def verificar_e_lidar_com_arquivo_em_uso(caminho_arquivo):
+    """
+    Verifica se um arquivo está em uso e pergunta ao usuário se deseja fechar os processos.
+    
+    Args:
+        caminho_arquivo (str): Caminho do arquivo a verificar
+        
+    Returns:
+        bool: True se o arquivo pode ser copiado (não está em uso ou processos foram fechados),
+              False se o arquivo está em uso e o usuário não quer fechar os processos
+    """
+    if not os.path.exists(caminho_arquivo):
+        return True  # Se o arquivo não existe, não há problema
+    
+    processos = listar_processos_usando_arquivo(caminho_arquivo)
+    
+    if not processos:
+        return True  # Nenhum processo usando o arquivo
+    
+    # Arquivo está em uso
+    nome_arquivo = os.path.basename(caminho_arquivo)
+    print(Fore.RED + f"\n⚠ ATENÇÃO: O arquivo '{nome_arquivo}' está sendo usado por outro(s) processo(s):")
+    
+    for pid, nome in processos:
+        print(Fore.YELLOW + f"  • {nome} (PID: {pid})")
+    
+    # Pergunta se deseja fechar os processos
+    if perguntar_sim_nao("\nDeseja tentar fechar estes processos?", Fore.RED):
+        sucesso_total = True
+        for pid, nome in processos:
+            if not tentar_fechar_processo(pid, nome):
+                sucesso_total = False
+        
+        if sucesso_total:
+            print(Fore.GREEN + f"  ✓ Todos os processos foram fechados. O arquivo pode ser copiado.")
+            return True
+        else:
+            print(Fore.YELLOW + f"  ⚠ Alguns processos não puderam ser fechados.")
+            if perguntar_sim_nao("Deseja tentar copiar o arquivo mesmo assim?", Fore.YELLOW):
+                return True
+            else:
+                return False
+    else:
+        print(Fore.CYAN + f"  → Operação cancelada pelo usuário.")
+        return False
+
+
 def copiar_arquivo_com_confirmacao(origem, destino, perguntar_substituir=True):
     """
     Copia um arquivo, com opção de confirmar substituição se já existir.
@@ -134,13 +246,20 @@ def copiar_arquivo_com_confirmacao(origem, destino, perguntar_substituir=True):
         str: 'copiado', 'ignorado' ou 'erro'
     """
     # Verifica se o arquivo de destino já existe
-    if os.path.exists(destino) and perguntar_substituir:
-        nome_arquivo = os.path.basename(destino)
-        print(Fore.YELLOW + f"\n⚠ O arquivo '{nome_arquivo}' já existe no destino.")
-        
-        if not perguntar_sim_nao(f"Deseja SUBSTITUIR '{nome_arquivo}'?"):
-            print(Fore.CYAN + f"  → Arquivo '{nome_arquivo}' ignorado.")
+    if os.path.exists(destino):
+        # Verifica se o arquivo está em uso por algum processo
+        if not verificar_e_lidar_com_arquivo_em_uso(destino):
+            nome_arquivo = os.path.basename(destino)
+            print(Fore.CYAN + f"  → Arquivo '{nome_arquivo}' ignorado (em uso).")
             return 'ignorado'
+        
+        if perguntar_substituir:
+            nome_arquivo = os.path.basename(destino)
+            print(Fore.YELLOW + f"\n⚠ O arquivo '{nome_arquivo}' já existe no destino.")
+            
+            if not perguntar_sim_nao(f"Deseja SUBSTITUIR '{nome_arquivo}'?"):
+                print(Fore.CYAN + f"  → Arquivo '{nome_arquivo}' ignorado.")
+                return 'ignorado'
     
     # Tenta copiar o arquivo
     try:
